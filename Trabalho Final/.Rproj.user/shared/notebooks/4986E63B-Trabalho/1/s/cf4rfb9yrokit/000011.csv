@@ -1,0 +1,35 @@
+"0","map_dfr("
+"0","  precos[2:6],"
+"0","  "
+"0","  \(x) adf.test(x) %>%  tidy(),"
+"0","  .id = ""serie"""
+"0","  ) %>% "
+"0","  kable("
+"0","    col.names = c("
+"0","      ""Série"","
+"0","      ""Statistic: Dickey-Fuller Z (alpha)"","
+"0","      ""P Value"","
+"0","      ""Truncation lag"","
+"0","      ""Method"","
+"0","      ""Alternative Hypothesis"""
+"0","      ),"
+"0","    caption = ""Teste Augmented Dickey-Fuller: Séries de Níveis de Preço"""
+"0","    )"
+"2","Error: Incomplete expression: map_dfr(
+  precos[2:6],
+  
+  \(x) adf.test(x) %>%  tidy(),
+  .id = ""serie""
+  ) %>% 
+  kable(
+    col.names = c(
+      ""Série"",
+      ""Statistic: Dickey-Fuller Z (alpha)"",
+      ""P Value"",
+      ""Truncation lag"",
+      ""Method"",
+      ""Alternative Hypothesis""
+      ),
+    caption = ""Teste Augmented Dickey-Fuller: Séries de Níveis de Preço""
+    )
+"

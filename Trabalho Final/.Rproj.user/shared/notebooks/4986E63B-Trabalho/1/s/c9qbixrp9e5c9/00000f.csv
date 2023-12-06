@@ -1,0 +1,5 @@
+"0","precos %>% "
+"0","  head(8) %>% "
+"0","  kable("
+"0","    caption = ""Série Nível de Preço: Primeiras 8 Observações"""
+"0","  )"

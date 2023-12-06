@@ -1,0 +1,271 @@
+---
+title: "Questão 3"
+author: "Shai Vaz, Alexandre Almeida, Heron Goulart, João Pedro Pedrosa, Roberto Orenstein"
+date: "2023-10-04"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r, include=FALSE}
+library(rbcb)
+library(tidyverse)
+library(tseries)
+library(forecast)
+library(stargazer)
+library(broom)
+library(knitr)
+```
+
+# Questão 3
+
+## Dados
+
+```{r}
+ipca <- rbcb::get_series(code = 433, start_date = "2001-07-01", end_date = "2023-07-01")
+
+ipca <- ipca %>%
+  set_names(c("Date","MoM")) %>% 
+  mutate(
+    MoM = ifelse(Date == "2001-07-01", 0, MoM),
+    Index = 100 * cumprod(MoM / 100 + 1),
+    IndexLog = log(Index),
+    IndexLogDiff = c(NA, diff(IndexLog))
+  )
+```
+
+Repare que ao realizar as transformações indicadas no enunciado, obtivemos exatamente o mesmo dado inicial, afinal a diferença de log é uma aproximação para uma variação percentual. Ou seja, apenas perdemos uma observação e pioramos a qualidade do dado porque a aproximação pela primeira diferença dos logs introduz um erro.
+
+Agora vamos criar uma variável no formato de série temporal.
+
+```{r}
+IndexLogDiff_ts <- ts(ipca$IndexLogDiff,start = c(2001,7), frequency = 12)
+IndexLogDiff_ts <- na.omit(IndexLogDiff_ts)
+```
+
+Vamos visualizar a série temporal.
+
+```{r}
+plot(
+  IndexLogDiff_ts*100,
+  xlab = "Data",
+  ylab = "Variação na Inflação",
+  main = "Log-Diferença do Índice de Inflação"
+    )
+```
+
+## Teste Phillips Perron
+
+```{r, warning=FALSE}
+pp_test <- pp.test(IndexLogDiff_ts)
+```
+
+```{r}
+tidy(pp_test) %>% 
+  kable(
+    col.names = c(
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Parameter: Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+    ),
+    caption = "Teste Philips Perron"
+  )
+```
+
+
+Ao analisarmos o p-value do teste de raiz unitária de Phillips-Perron, podemos rejeitar a hipótese nula e concluir que a série é estacionária.
+
+## Teste de Dickey-Fuller aumentado
+
+```{r}
+adf_test <- adf.test(IndexLogDiff_ts, alternative = "stationary", k = 12)
+```
+
+```{r}
+tidy(adf_test) %>% 
+  kable(
+    col.names = c(
+      "Statistic: Dickey-Fuller",
+      "P Value",
+      "Parameter: Lag order",
+      "Method",
+      "Alternative Hypothesis"
+    ),
+    caption = "Teste Dickey-Fuller Aumentado"
+  )
+```
+
+O teste de Dickey-Fuller aumentado que aplicamos à série temporal indica que a série é estacionária. Isso é sustentado pelo valor-p, que é menor do que o nível de significância comum. Portanto, podemos rejeitar a hipótese de que a série possui uma raiz unitária.
+
+## Funções de Autocorrelação
+
+```{r}
+acf(IndexLogDiff_ts,
+    main = "Autocorrelation Function: Série Log-Dif")
+```
+
+```{r}
+pacf(IndexLogDiff_ts,
+    main = "Partial Autocorrelation Function: Série Log-Dif")
+```
+
+## Modelo ARMA
+
+### Decisão pela FAC/FACP
+
+Pelo FAC, identificamos que a ordem do MA é 4 e, pela FACP, que a ordem do AR é 1. No entanto, vamos fazer modelos alternativos para escolher o melhor pelo critério da informação.
+
+```{r}
+# Modelo 1
+modelo_arma4 <- arima(IndexLogDiff_ts, order = c(1, 0, 4))
+
+# Modelo 2
+modelo_arma1 <- arima(IndexLogDiff_ts, order = c(1, 0, 1))
+
+# Modelo 3
+modelo_arma2 <- arima(IndexLogDiff_ts, order = c(1, 0, 2))
+
+# Modelo 4
+modelo_arma3 <- arima(IndexLogDiff_ts, order = c(1, 0, 3))
+```
+
+```{r, results='asis'}
+stargazer(
+  modelo_arma1,
+  modelo_arma2,
+  modelo_arma3,
+  modelo_arma4,
+  header = FALSE,
+  float = FALSE,
+  dep.var.caption = "Models",
+  dep.var.labels = "",
+  column.labels = c(
+      "ARIMA(1,0,1)",
+      "ARIMA(1,0,2)",
+      "ARIMA(1,0,3)",
+      "ARIMA(1,0,4)"),
+  title = "Resultados dos Modelos ARMA"
+)
+```
+
+
+### Auto Arima (critérios de informação)
+
+Utilizaremos a função `auto.arima`, que, de forma automática, calcula todos os modelos dentro de limites dados, calcula seus critérios de informação e escolhe o modelo que minimiza. Aqui, escolhemos os limites de 5 lags para cada parte do modelo (AR e MA). 
+
+```{r}
+modelo_arma_auto <- auto.arima(
+  max.p = 5,
+  max.q = 5,
+  IndexLogDiff_ts,
+  seasonal = FALSE,
+  stepwise = FALSE,
+  approximation = FALSE,
+  ic = "bic"
+  ) 
+```
+
+
+```{r}
+tidy(modelo_arma_auto) %>% 
+  kable(
+    col.names = c(
+      "Term",
+      "Estimate",
+      "Standard Error"
+    ),
+    caption = "Information Criteria Minimizer Model"
+  )
+```
+
+Ele sugere que o melhor modelo é, na realidade, o AR(1). Isso ocorre utilizando qualquer dos três criétios como base (AIC, BIC ou AICc). Vamos visualizar, aqui, os modelos pelos critério da informação. Salvaremos esse modelo como `modelo_arma5`.
+
+```{r}
+modelo_arma5 <- arima(IndexLogDiff_ts, order = c(1, 0, 0))
+```
+
+```{r, include=FALSE}
+m1 = modelo_arma1
+m2 = modelo_arma2 
+m3 = modelo_arma3
+m4 = modelo_arma4
+m5 = modelo_arma5
+```
+
+
+### Critério da Informação
+
+Vamos olhar agora, todos os modelos juntos:
+
+```{r, results='asis'}
+stargazer(m5,m1,m2,m3,m4,
+  header = FALSE,
+  float = FALSE,
+  dep.var.caption = "Models",
+  dep.var.labels = "",
+  column.labels = c(
+    "AR(1)",  
+    "ARIMA(1,0,1)",
+    "ARIMA(1,0,2)",
+    "ARIMA(1,0,3)",
+    "ARIMA(1,0,4)"),
+  title = "Resultados de todos os modelos realizados"
+  )
+```
+
+Note que o modelo que escolhemos originalmente, tem a maior log verossimilhança! Este seria o melhor modelo, portanto, se o critério de decisão fosse esse. Mas ao utilizarmos o critério de informação, punimos o modelo pelo aumento na quantidade de parâmetros.
+
+Decidindo pela minimização dos critérios de informação, o modelo 5, um AR(1), é de fato o melhor modelo. Embora a análise da FAC e FACP tenha nos levado ao modelo ARMA(1,4), o modelo AR(1) é mais parcimonioso e prosseguiremos com ele.
+
+Podemos ver isso mais claramente na tabela seguinte, apenas com os critérios.
+
+
+```{r} 
+bind_rows(
+  glance(modelo_arma1),
+  glance(modelo_arma2),
+  glance(modelo_arma3),
+  glance(modelo_arma4),
+  glance(modelo_arma5)
+  ) %>% 
+  mutate(
+    Model = c(
+      "ARIMA(1,0,1)",
+      "ARIMA(1,0,2)",
+      "ARIMA(1,0,3)",
+      "ARIMA(1,0,4)",
+      "AR(1)"),
+    .before = 1
+  ) %>% 
+  select(
+    c(1,3,4,5)
+  ) %>% 
+  kable(
+    col.names = c(
+      "Model",
+      "Log Likelihood",
+      "AIC",
+      "BIC"
+    ),
+    caption = "Decision Criteria"
+  )
+```
+
+
+## Previsão
+
+Plotando as previsões do modelo 5 um ano a frente.
+
+```{r}
+plot(forecast(modelo_arma5, h=12),
+     main = "12 Month Forecast for AR(1)")
+```
+
+Podemos também plotar as previsões para o modelo ARIMA(1,0,4), que foi obtido pela análise da FAC e FACP.
+
+```{r}
+plot(forecast(modelo_arma4,h=12),
+     main = "12 Month Forecast for ARIMA(1,0,4)")
+```

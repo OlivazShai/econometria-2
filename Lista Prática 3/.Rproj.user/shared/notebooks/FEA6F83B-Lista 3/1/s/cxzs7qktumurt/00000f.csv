@@ -1,0 +1,7 @@
+"0","dados_var_bruto <- read_xls("
+"0","  path = ""./dados_lista3.xls"","
+"0","  sheet = ""Dados VAR"""
+"0","  ) %>% "
+"0","  mutate("
+"0","    date = as_date(date)"
+"0","  )"

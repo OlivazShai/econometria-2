@@ -1,0 +1,344 @@
+---
+title: "Lista 3 de Econometria"
+author: "Shai Vaz, Heron Goulart, Alexandre Almeida, João Pedro Pedrosa, Roberto Orenstein"
+date: "November 2023"
+output: pdf_document
+---
+
+```{r include=FALSE}
+library(readxl)
+library(ggplot2)
+library(lubridate)
+library(forecast)
+library(broom)
+library(stargazer)
+library(knitr)
+library(urca)
+library(tseries)
+library(vars)
+library(gmm)
+
+library(dplyr)
+library(tidyr)
+library(readr)
+```
+
+# Importando dados
+
+Inicialmente, vamos importar os dados gerados no Excel.
+
+```{r}
+dados_var_bruto <- read_xls(
+  path = "./dados_lista3.xls",
+  sheet = "Dados VAR"
+  ) %>% 
+  mutate(
+    date = as_date(date)
+  )
+```
+
+```{r}
+dados_gmm <- read_xls(
+  path = "./dados_lista3.xls",
+  sheet = "Dados GMM"
+  ) %>% 
+  mutate(
+    date = as_date(date)
+  )
+```
+
+# Modelo VAR
+
+## Tirar log diferenças
+
+```{r}
+dados_var <- dados_var_bruto %>%
+  mutate(
+    log_dif_c = log(c/lag(c)),
+    log_dif_R = log_R-lag(log_R)
+    ) %>% 
+  filter(
+    date > "1970-10-01"
+  )
+```
+
+## Teste de Raíz Unitária
+
+### Teste de Philips-Perron
+
+Primeiro, para a série Log Diferença dos Retornos do T-Bill.
+
+```{r, warning=FALSE}
+pp.test(dados_var$log_dif_R) %>% 
+  tidy() %>% 
+  kable(
+    col.names = c(
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Parameter: Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+      ),
+    caption = "Teste Philips Perron: Série Log Dif Retornos"
+    )
+```
+
+Agora, para a Log-Diferença do Consumo.
+
+```{r, warning=FALSE}
+pp.test(dados_var$log_dif_c) %>% 
+  tidy() %>% 
+  kable(
+    col.names = c(
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Parameter: Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+      ),
+    caption = "Teste Philips Perron: Série Log Dif do Consumo"
+    )
+```
+
+### Augmented Dickey-Fuller
+
+```{r, warning=FALSE}
+adf.test(dados_var$log_dif_R) %>% 
+  tidy() %>% 
+  kable(
+    col.names = c(
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Parameter: Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+      ),
+    caption = "Teste Augmented Dickey-Fuller: Série Log Dif do Retorno"
+    )
+```
+
+```{r, warning=FALSE}
+adf.test(dados_var$log_dif_c) %>% 
+  tidy() %>% 
+  kable(
+    col.names = c(
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Parameter: Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+      ),
+    caption = "Teste Augmented Dickey-Fuller: Série Log Dif do Consumo"
+    )
+```
+
+## Funções de Autocorrelação
+
+### FAC
+
+```{r}
+acf(dados_var$log_dif_c)
+```
+
+```{r}
+acf(dados_var$log_dif_R)
+```
+
+### FACP
+
+```{r}
+pacf(dados_var$log_dif_c)
+```
+
+```{r}
+pacf(dados_var$log_dif_R)
+```
+
+## Critérios de Informação
+
+Utilizamos a função VARselect que retorna a ordem que minimiza os critérios de informação.
+
+```{r, warning=FALSE}
+VARselect(
+  y = dados_var[,4:5],
+  lag.max = 5,
+  type = "const"
+)$selection %>%
+  tidy() %>% 
+  kable(
+    col.names = c(
+      "Criteria",
+      "Order"
+    )
+  )
+  
+```
+
+Os critérios AIC e HQ sugerem ordem 3, mas o critério BIC (SC) sugere ordem 1. Pelas FAC e FACP acreditamos que a ordem 3 faça mais sentido nesse caso. Faremos os dois casos.
+
+## Modelagem VAR
+
+```{r}
+var1 <- VAR(
+  y = dados_var[,4:5],
+  p = 1,
+  type = "const"
+)
+```
+
+```{r}
+var3 <- VAR(
+  y = dados_var[,4:5],
+  p = 3,
+  type = "const"
+)
+```
+
+```{r}
+m1 <- var1$varresult
+m3 <- var3$varresult
+```
+
+### Var (1)
+
+```{r, results='asis'}
+stargazer(
+  m1,
+  header = FALSE 
+  )
+```
+
+### Var (3)
+
+```{r, results='asis'}
+stargazer(
+  m3,
+  header = FALSE 
+  )
+```
+
+## Análise de Resíduos
+
+### VAR (1)
+
+```{r}
+r1 <- residuals(var1) %>% as_tibble()
+```
+
+```{r}
+acf(r1[,1])
+```
+
+```{r}
+acf(r1[,2])
+```
+
+### VAR (3)
+
+```{r}
+r3 <- residuals(var3) %>% as_tibble()
+```
+
+```{r}
+acf(r3[,1])
+```
+
+```{r}
+acf(r3[,2])
+```
+
+## Matriz de resposta aos choques
+
+```{r}
+s3 <- summary(var3)
+```
+
+```{r, results='asis'}
+stargazer(
+  s3$covres,
+  header = FALSE,
+  digits = 10
+  )
+```
+
+## Função de Resposta a Impulso
+
+### Geração das funções
+
+```{r}
+irf3_cc <- irf(
+  var3,
+  impulse = "log_dif_c",
+  response = "log_dif_c",
+  n.ahead = 15
+  )
+
+irf3_cR <- irf(
+  var3,
+  impulse = "log_dif_c",
+  response = "log_dif_R",
+  n.ahead = 15
+  )
+
+irf3_RR <- irf(
+  var3,
+  impulse = "log_dif_R",
+  response = "log_dif_R",
+  n.ahead = 15
+  )
+
+irf3_Rc <- irf(
+  var3,
+  impulse = "log_dif_R",
+  response = "log_dif_c",
+  n.ahead = 15
+  )
+```
+
+### Impulso do Consumo no Consumo
+
+```{r}
+plot(irf3_cc)
+```
+
+### Impulso do Consumo no Retorno
+
+```{r}
+plot(irf3_cR)
+```
+
+### Impulso do Retorno no Retorno
+
+```{r}
+plot(irf3_RR)
+```
+
+### Impulso do Retorno no Consumo
+
+```{r}
+plot(irf3_Rc)
+```
+
+## Coeficiente de Aversão Absoluta ao Risco
+
+Covariância(C,R)/Covariancia(R,R)
+
+Qual matriz de cov usar? A das variáveis ou dos resíduos da regressão?
+
+```{r}
+cov(dados_var[,4:5])
+print("")
+s3$covres
+```
+
+CARA se for pela matriz das variáveis:
+
+```{r}
+cov(dados_var[,4:5])[1,2]/cov(dados_var[,4:5])[2,2]
+```
+
+CARA se for pela matriz sigma:
+
+```{r}
+s3$covres[1,2]/s3$covres[2,2]
+```

@@ -1,0 +1,7 @@
+"0","dados_gmm <- read_xls("
+"0","  path = ""./dados_lista3.xls"","
+"0","  sheet = ""Dados GMM"""
+"0","  ) %>% "
+"0","  mutate("
+"0","    date = as_date(date)"
+"0","  )"

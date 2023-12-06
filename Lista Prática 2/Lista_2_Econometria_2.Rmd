@@ -1,0 +1,302 @@
+---
+title: "Questão 2"
+author: "Shai Vaz, Heron Goulart, Alexandre Almeida, João Pedro Pedrosa, Roberto Orenstein"
+date: "2023-10-04"
+output: pdf_document
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{environ}
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{array}
+  - \usepackage{multirow}
+  - \usepackage{wrapfig}
+  - \usepackage{float}
+  - \usepackage{colortbl}
+  - \usepackage{pdflscape}
+  - \usepackage{tabu}
+  - \usepackage{threeparttable}
+  - \usepackage{threeparttablex}
+  - \usepackage[normalem]{ulem}
+  - \usepackage[utf8]{inputenc}
+  - \usepackage{makecell}
+  - \usepackage{xcolor}
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE, results='hide'}
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(readr)
+library(readxl)
+library(sidrar)
+library(ggplot2)
+library(quantmod)
+library(lubridate)
+library(forecast)
+library(plm)
+library(stats)
+library(broom)
+library(stargazer)
+library(knitr)
+library(kableExtra)
+```
+
+# Questão 2: Modelo Fama-French
+
+## Modelo
+
+Adaptando @Cochrane2005 e @fama1993 :
+
+1.  Etapa painel
+
+$$
+R^{e}_{i,t} = R_{i,t} - Rf_{i,t} = a_i + \widehat{ \beta_{i,Mkt} } (R_{Mkt, t} - Rf) + \widehat{ \beta_{i,SMB} } SMB + \widehat{ \beta_{i,HML} } HML + \epsilon_{i,t}
+$$
+
+2.  Etapa Cross-Section
+
+$$
+\mathbb{E} [R^{e}_{i,t}] = \alpha + \beta_{i,Mkt} \widehat{ \lambda_{Mkt} } + \beta_{i,SMB} \widehat{ \lambda_{SMB} } + \beta_{i,HML} \widehat{ \lambda_{HML} } + \eta_{i}
+$$
+
+## Importação dos dados
+
+Baixamos os portfólios.
+
+```{r}
+port <- read_xlsx(
+  "Avg_Val_Weight_Ret_25port1.xlsx",
+  ) %>% 
+  mutate(
+    month = as_date(month)
+  )
+```
+
+Agora, baixamos os fatores.
+
+```{r}
+fac <- read_xlsx(
+  "F-F_Research_Data_Factors1.xlsx"
+  ) %>% 
+  mutate(
+    month = as_date(month)
+  )
+```
+
+Unificamos os dois.
+
+```{r}
+FF <- full_join(
+  fac, port,
+  by = "month"
+  ) 
+
+remove(fac, port)
+```
+
+Em seguida, pivotamos as colunas de portfólios para long format. A coluna `i`, contém os portfólios, e a coluna `R` contém os seus retornos.
+
+```{r}
+FF_long <- FF %>% 
+  pivot_longer(
+    !1:5,
+    names_to = "i",
+    values_to = "R"
+  ) %>%  
+  mutate(
+    Mkt = as.numeric(Mkt),
+    SMB = as.numeric(SMB),
+    HML = as.numeric(HML),
+    RF = as.numeric(RF)
+  )
+```
+
+Vamos calcular também o Excesso de Retorno dos portfólios. Notemos que o retorno de mercado (`Mkt`) já está representado também em excesso de retornos.
+
+```{r}
+FF_long <- FF_long %>% 
+  mutate(
+    Re = R - RF
+  )
+```
+
+## Regressão em Painel
+
+Agora, vamos regredir os retornos de cada um dos 25 portfólios nos 3 fatores de Fama-French. Há uma versão em que a variável dependente é o Retorno Bruto, e outra em que a variável dependente é o retorno bruto, e outra com o excesso de retorno.
+
+```{r}
+painel_R <- pvcm(
+  R ~ Mkt + SMB + HML,
+  data = FF_long,
+  model = "within",
+  index = c("i", "month")
+)
+```
+
+```{r}
+betas_R <- coef(painel_R) %>% 
+  rownames_to_column(var = "i") %>% 
+  rename(
+    a = "(Intercept)",
+    b_Mkt = Mkt,
+    b_SMB = SMB,
+    b_HML = HML
+  )
+```
+
+```{r}
+painel_Re <- pvcm(
+  Re ~ Mkt + SMB + HML,
+  data = FF_long,
+  model = "within",
+  index = c("i", "month")
+)
+```
+
+```{r}
+betas_Re <- coef(painel_Re) %>% 
+  rownames_to_column(var = "i") %>% 
+  rename(
+    a = "(Intercept)",
+    b_Mkt = Mkt,
+    b_SMB = SMB,
+    b_HML = HML
+  )
+```
+
+### Resultados do Painel
+
+```{r, echo=FALSE}
+betas <- inner_join(
+  betas_R,
+  betas_Re,
+  by = "i"
+)
+```
+
+```{r,echo=FALSE}
+kable(
+  betas,
+  linesep = "\\addlinespace",
+  booktabs = TRUE,
+  col.names = c(
+    "Portfólios           ",
+    "a       ",
+    "$\\beta_{Mkt}$",
+    "$\\beta_{SMB}$",
+    "$\\beta_{HML}$",
+    "a       ",
+    "$\\beta_{Mkt}$",
+    "$\\beta_{SMB}$",
+    "$\\beta_{HML}$"
+    ),
+  digits = 3,
+  escape = FALSE
+  ) %>% 
+  add_header_above(
+    c(" " = 1, "Retornos Brutos" = 4, "Excesso de retornos" = 4)
+    )
+```
+
+## Regressão em Cross-Section
+
+Novamente, teremos uma versão em que os retornos dos portfólios estão brutos, e outra versão em que estão líquidos da taxa livre de risco, portanto em excesso de retorno.
+
+Inicialmente, preparamos o dataframe de Retornos Esperados (ER) dos portfólios. A seguir, juntaremos esse dado com os betas estimados anteriormente.
+
+```{r}
+FF_expected <- FF_long %>%
+  select(
+    i,R,Re
+  ) %>% 
+  group_by(i) %>% 
+  summarise(
+    ER = mean(R),
+    ERe = mean(Re)
+  )
+```
+
+Agora, juntamos com os betas.
+
+```{r}
+FF_ER <- FF_expected %>% 
+  full_join(
+    betas_R,
+    by = "i"
+  )
+```
+
+```{r}
+FF_ERe <- FF_expected %>% 
+  full_join(
+    betas_Re,
+    by = "i"
+  )
+```
+
+A seguir, rodamos regressões em Cross-Section dos retornos esperados nos betas, tanto com retornos brutos quanto com excessos de retorno.
+
+```{r}
+cross_ER <- lm(
+  ER ~ b_Mkt + b_SMB + b_HML,
+  data = FF_ER
+  )
+```
+
+```{r}
+cross_ERe <- lm(
+  ERe ~ b_Mkt + b_SMB + b_HML,
+  data = FF_ERe
+  ) 
+```
+
+## Conclusões
+
+Percebe-se que os prêmios de riscos $\lambda$ não variam se utilizamos qualquer um dos modelos, alterando apenas o intercepto. O que faz sentido. A diferença na constante é precisamente a esperança do retorno do ativo livre de risco $\mathbb{E}[R_f]$.
+
+A seguir, temos os resultados da regressão em Cross-Section, com as duas variáveis dependentes diferentes ($\mathbb{E}[R_i]$ e $\mathbb{E}[R_i^e]$) utilizadas.
+
+```{r, results='asis', echo=FALSE}
+stargazer(cross_ER, cross_ERe,
+          dep.var.labels = c(
+            "Expected Return",
+            "Expected Excess Return"
+          ),
+          covariate.labels=c(
+            "$\\lambda_{Mkt}$",
+            "$\\lambda_{SMB}$",
+            "$\\lambda_{HML}$"
+          ),
+          header=FALSE,
+          float = FALSE)
+```
+
+### Gráfico
+
+Podemos visualizar as inclinações $\lambda$ no gráfico a seguir.
+
+```{r}
+FF_ER %>% 
+  pivot_longer(
+    cols = c("b_Mkt","b_SMB","b_HML"),
+    names_to = "names",
+    values_to = "Betas"
+  ) %>% 
+  ggplot() +
+  aes(x=Betas, y=ER) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_wrap(
+    "names", 
+    scales = "free_x"
+  ) +
+  theme_minimal()
+```
+
+# References

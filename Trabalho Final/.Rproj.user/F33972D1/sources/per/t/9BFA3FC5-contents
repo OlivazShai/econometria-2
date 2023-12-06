@@ -1,0 +1,1003 @@
+---
+title: "Econometria II: Trabalho Final"
+subtitle: "Análise de preços agropecuários: Efeitos cruzados com câmbio e bolsa utilizando modelagem VAR"
+author: "Shai Vaz"
+date: "Dezembro de 2023"
+output:
+  pdf_document:
+    number_sections: TRUE
+header-includes:
+    - \usepackage{setspace}\onehalfspacing
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE)
+```
+
+```{r, warning=FALSE, results='hide'}
+# Importação de dados
+library(GetBCBData)
+library(yfR)
+# Embelezamento de tabelas
+library(knitr)
+library(broom)
+library(stargazer)
+# Gráficos
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(grid)
+library(gridtext)
+library(ggthemes)
+library(ggplotify)
+# Econometria
+library(forecast)
+library(vars)
+library(urca)
+library(tseries)
+# Tratamento de Dados (tidyverse)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(readxl)
+library(stringr)
+library(purrr)
+library(magrittr)
+```
+
+# Introdução
+
+Com o crescimento da população global, a produtividade econômica do setor agrícola torna-se cada vez mais central para atender à crescente demanda da cadeia produtiva alimetícia. Esse cenário destaca a importância do agronegócio brasileiro, que desempenha um papel fundamental não apenas na garantia da segurança alimentar doméstica, mas também como um protagonista significativo na cadeia internacional de suprimento de alimentos.
+
+O agronegócio no Brasil é um setor econômico essencial para a estabilidade financeira e macroeconômica do país, gerando receitas substanciais por meio de exportações e contribuindo para os ganhos cambiais. Diante desse panorama complexo e interconectado, esta pesquisa visa lançar luz sobre os movimentos dos preços de produtos agrícolas e sua relação com variáveis macroeconômicas-chave. Os produtos escolhidos para este trabalho foram a soja, o milho e o boi gordo, selecionados com base no peso de seu Valor de Produção médio, a partir de dados da Pesquisa Agrícola Municipal (PAM) e da Pesquisa da Pecuária Municipal (PPM). Os primeiros seis produtos, em ordem decrescente de V.P., podem ser vistos na **Tabela 1**.
+
+```{r}
+read_xlsx(
+  path = "./Inputs/pesos_agro.xlsx"
+  ) %>% 
+  select(
+    produto, ma_vp_2021
+  ) %>% 
+  head(7) %>% 
+  kable(
+    caption = "Produtos Agrícolas por ordem de valor da produção",
+    col.names = c(
+      "Produto",
+      "V.P. Médio (R$ Milhões)"
+      )
+  )
+```
+
+O presente estudo propõe uma análise da dinâmica desses três preços em conexão com duas variáveis fundamentais: a taxa de câmbio em dólar e o índice Ibovespa. Consideramos que as flutuações nos preços agrícolas podem ser moldadas por fatores cambiais e pelo desempenho do mercado de capitais, bem como estes estão profundamente relacionados com a dinêmica do setor agropecuário, importantíssimo para a economia nacional.
+
+A metodologia empregada nesta pesquisa é a modelagem Autoregressiva Vetorial (VAR), que permite trabalhar com a interdependência dinâmica entre as variáveis. Incorporamos séries temporais dos últimos 9 anos, com frequência semanal. Utilizamos não apenas os níveis absolutos dos preços, mas também as taxas de variação instantânea, através do uso de séries em log-diferenças construídas a partir dos níveis de preço.
+
+Os dados referentes aos produtos agrícolas foram extraídos do portal de informações da Companhia Nacional de Abastecimento (CONAB), e se referem aos preços aos produtores do estado do Mato Grosso. As séries disponíveis são estaduais, e os preços em cada apresentam enorme semelhança. A escolha do MT em particular se deve ao fato de ser o estado com maior participação na produção dos três itens analisados, segundo a Pesquisa da Pecuária Nacional.
+
+Já a taxa de câmbio e o índice IBOVESPA foram extraídos, respectivamente, do sistema de séries do Banco Central do Brasil e do Yahoo Finance. Para o Ibovespa, o índice apresenta valores em base 1000, normalização realizada para evitar distorções de escala nas regressões em nível. Podemos ver um trecho dos dados utilizados na **Tabela 2**, com níveis de preço, e na **Tabela 3**, com log-diferenças.
+
+```{r}
+#Importando Boi Gordo
+boi <- read_delim(
+  file = "./Inputs/boi_mt.csv",
+  delim = ";",
+  skip = 1,
+  col_names = c("data", "boi"),
+  col_types = c("D", "d")
+)
+```
+
+```{r}
+#Importando a Soja
+soja <- read_delim(
+  file = "./Inputs/soja_mt.csv",
+  delim = ";",
+  skip = 1,
+  col_names = c("data", "soja"),
+  col_types = c("D", "d")
+)
+```
+
+```{r}
+# Importando o Milho
+milho <- read_delim(
+  file = "./Inputs/milho_mt.csv",
+  delim = ";",
+  skip = 1,
+  col_names = c("data", "milho"),
+  col_types = c("D", "d")
+)
+```
+
+```{r}
+# Importando o Dólar
+dolar <- gbcbd_get_series(
+  id = c('dolar' = 1),
+  first.date = "2013-12-29",
+  last.date = Sys.Date()
+  ) %>% 
+  rename(
+    data = ref.date,
+    dolar = value
+  ) %>% 
+  select(
+    data, dolar
+  )
+```
+
+```{r}
+# Importando o Ibovespa
+ibov = yf_get(
+  '^BVSP',
+  first_date = as.Date('2013-12-29'),
+  last_date = Sys.Date()
+  ) %>%
+  select(
+    ref_date,
+    price_close
+  ) %>% 
+  mutate(
+    data = ref_date,
+    ibov = price_close/1000 # Normalização em base 1000
+  ) %>% 
+  select(
+    data, ibov
+  )
+  
+```
+
+```{r}
+# Construção da série de preços em nível
+precos <- soja %>% 
+  full_join(boi, by = "data") %>% 
+  full_join(milho, by = "data") %>%
+  full_join(dolar, by = "data") %>% 
+  full_join(ibov, by = "data") %>% 
+  drop_na() 
+```
+
+```{r}
+# Formatação dos preços em formato LONG
+precos_longer <- precos %>% 
+  pivot_longer(
+    cols = c(soja, boi, milho, dolar, ibov),
+    names_to = "serie",
+    values_to = "preco"
+  ) %>% 
+  mutate(
+    serie = factor(
+      serie,
+      levels = c("soja", "boi", "milho", "dolar", "ibov"),
+      ordered = TRUE
+    )
+  )
+```
+
+```{r}
+# Construção da série em Log-Dif em LONG
+dp_longer <- precos_longer %>% 
+  group_by(
+    serie
+  )%>%
+  mutate(
+    dp = log(preco/lag(preco)),
+    .keep = "unused"
+  ) %>%
+  drop_na()
+```
+
+```{r}
+# Construção da série log-dif em WIDE
+dp <- dp_longer %>% 
+  pivot_wider(
+    names_from = serie,
+    values_from = dp
+  ) %>% 
+  drop_na()
+```
+
+```{r}
+precos %>% 
+  head(8) %>% 
+  kable(
+    caption = "Série Nível de Preço: Primeiras 8 Observações"
+  )
+```
+
+```{r}
+dp %>% 
+  head(8) %>% 
+  kable(
+    caption = "Série Log-Diferença: Primeiras 8 Observações",
+    digits = 4
+  )
+```
+
+Antes da modelagem, analisamos as estatísticas descritivas e fizemos uma análise gráfica de ambas as séries. Além disso, aplicamos testes de raiz unitária para avaliar a estacionariedade das séries, um aspecto crucial em análises de séries temporais. Calculamos as funções de autocorrelação das séries e realizamos um processo de minimização dos critérios de informação para determinar a ordem ideal dos modelos VAR.
+
+Os modelos identificados foram então aplicados aos dados, e uma avaliação diagnóstica foi realizada para analisar a presença de autocorrelação nos resíduos, processo que busca garantir a robustez dos resultados obtidos. Além disso, apresentamos e analisamos as funções de resposta a impulso, explorando como choques em uma variável afetam as demais ao longo do tempo.
+
+# Estatística descritiva
+
+A data inicial dos dados já agregados do nível de preço é `r min(precos$data)`, e a data final é `r max(precos$data)`. Na **Tabela 4**, obtemos as principais estatísticas descritivas dos dados Níveis de Preço, como valores mínimo, máximo, média, mediana e desvio padrão. O mesmo é realizado na **Tabela 5**, mas para dados em log-diferenças. Temos séries de nível com medianas menores que as médias, indicando *right-skewedness*, ou seja, distribuições com o pico desviado para a esquerda. Para as séries de log-diferença, temos dados com pouco *skew*.
+
+```{r, warning=FALSE}
+precos_longer %>%
+  group_by(serie) %>% 
+  summarise(
+    min = min(preco),
+    max = max(preco),
+    mean = mean(preco),
+    median = median(preco),
+    sd = sd(preco)
+    ) %>%
+  kable(
+    col.names = c(
+      "Série",
+      "Mínimo",
+      "Máximo",
+      "Média",
+      "Mediana",
+      "Desvio Padrão"
+      ),
+    caption = "Estatíticas resumo dos dados em nível",
+    digits = 3 
+
+  )
+```
+
+```{r}
+dp_longer %>%
+  group_by(serie) %>% 
+  summarise(
+    min = min(dp),
+    max = max(dp),
+    mean = mean(dp),
+    median = median(dp),
+    sd = sd(dp)
+    ) %>%
+  kable(
+    col.names = c(
+      "Série",
+      "Mínimo",
+      "Máximo",
+      "Média",
+      "Mediana",
+      "Desvio Padrão"
+      ),
+    caption = "Estatíticas resumo dos dados log-diferença",
+    digits = 3 
+
+  )
+```
+
+# Análise Gráfica
+
+## Série em Nível
+
+A seguir, vemos um gráfico das séries de nível de preço analisadas, e podemos observar alguns padrões. No contexto dos dados agropecuários, observa-se uma relativa estabilidade nos primeiros anos, seguida por uma ascensão que se inicia pouco antes e intensifica-se durante a Pandemia da COVID-19. A pandemia desencadeou perturbações significativas nas cadeias de suprimentos, nas demandas de consumo e nas condições operacionais, fatores que podem ter contribuído para a volatilidade e mudanças nos preços desses produtos, bem como com relação às séries do dolar e do índice ibovespa. Vemos também um co-movimento discernível entre as variáveis de preços agrícola, com algum reflexo na série do dólar, mas pouco associado, visualmente, aos movimentos da bolsa de valores.
+
+```{r}
+precos_longer %>% 
+  ggplot() +
+  aes(x = data, y = preco, fill = serie, color = serie) +
+  geom_area(
+    alpha = 0.5
+      ) +
+  facet_grid(
+    rows = vars(serie),
+    scales = "free")  +
+  labs(
+    title = 'Séries Históricas: Níveis de Preços Semanais',
+    x = "Data",
+    y = "Preços",
+    fill = "Série",
+    color = "Série"
+  ) +
+  scale_y_continuous(
+    labels = scales::label_comma(scale_cut = scales::cut_long_scale())
+    ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color='grey')
+    ) +
+  geom_hline(yintercept = 0, linetype = 3, color = "grey")
+  
+```
+
+## Série em Log Diferenças
+
+A análise do gráfico da série de log-diferenças revela aspectos interessantes, destacando-se a expressiva volatilidade observada no dólar e na bolsa de valores, bem como em alguma medida nos preços da soja. Essa volatilidade assume particular relevância em momentos específicos, evidenciando-se de forma acentuada em anos como 2016, 2020 e 2022. Esses picos de volatilidade coincidem com momentos de significativa instabilidade política e econômica no Brasil e globalmente, como a crise política de 2016, a pandemia de COVID-19 em 2020, e as eleições de 2022. Além disso, a análise gráfica exibe claramente o caráter estacionário das variáveis em log-diferenças.
+
+```{r}
+dp_longer %>% 
+  ggplot() +
+  aes(x = data, y = dp, color = serie) +
+  geom_line() +
+  facet_grid(
+    rows = vars(serie),
+    scales = "free")  +
+  labs(
+    title = 'Séries Históricas: Log Diferença dos Preços Semanais',
+    x = "Data",
+    y = "Taxa",
+    fill = "Série",
+    color = "Série"
+  ) +
+  scale_y_continuous(
+    labels = scales::label_comma(scale_cut = scales::cut_long_scale())
+    ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color='grey')
+    ) +
+  geom_hline(yintercept = 0, linetype = 3, color = "grey")
+```
+
+# Teste de Raíz Unitária
+
+A seguir, prosseguiremos para os testes de raíz-unitária das séries sob análise. Os testes realizados são o teste de Philips-Perron e o teste de Dickey-Fuller Aumentado. Neles, a hipótese nula é a de presença de raíz unitária, e a hipótese alternativa é a de estacionariedade. Dessa forma, a p-valores menores menores que algum nível de significância, rejeitamos a hipótese nula e consideramos a série como estacionária. Do contrário, não rejeitamos a hipótese nula, e não podemos afirmar que a série não tem raíz unitária -- embora não possamos também afirmar que a série tenha raíz unitária, nesse caso. Iniciamos com os preços em nível.
+
+```{r, warning=FALSE}
+map_dfr(
+  precos[2:6],
+  
+  \(x) pp.test(x, lshort = FALSE) %>%  tidy(),
+  .id = "serie"
+  
+  ) %>% 
+  kable(
+    col.names = c(
+      "Série",
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+      ),
+    caption = "Teste Philips-Perron: Séries de Níveis de Preço"
+    )
+```
+
+```{r, warning=FALSE}
+map_dfr(
+  precos[2:6],
+  
+  \(x) adf.test(x) %>%  tidy(),
+  .id = "serie"
+  ) %>% 
+  kable(
+    col.names = c(
+      "Série",
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+      ),
+    caption = "Teste Augmented Dickey-Fuller: Séries de Níveis de Preço"
+    )
+```
+
+A **Tabela 6** apresenta os resultados, por série, do teste de Phillips-Perron (PP) nos níveis de preço, e a **Tabela 7** apresenta os resultados do teste de Dickey-Fuller Aumentado (ADF). De acordo com os resultados de ambos os testes, percebe-se que, exceto com relação à série do Ibovespa, quando tratamos dos dados em nível de preços não é possível atestar a inexistência de raíz-unitária, ou seja, não é posível atestar a estacionariedade das séries. A seguir, realizamos os mesmos testes com as séries em Log-Diferença, cujos resultados estão apresentados nas **Tabela 8** e **Tabela 9.**
+
+```{r, warning=FALSE}
+map_dfr(
+  dp[2:6],
+  
+  \(x) pp.test(x, lshort = FALSE) %>%  tidy(),
+  .id = "serie"
+  
+  )%>% 
+  kable(
+    col.names = c(
+      "Série",
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+      ),
+    caption = "Teste Philips-Perron: Séries de Log Diferença",
+    digits = 4
+    )
+```
+
+```{r, warning=FALSE}
+map_dfr(
+  dp[2:6],
+  
+  \(x) adf.test(x) %>%  tidy(),
+  .id = "serie"
+  
+  ) %>% 
+  kable(
+    col.names = c(
+      "Série",
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+      ),
+    caption = "Teste Augmented Dickey-Fuller: Séries de Log Diferença"
+    )
+```
+
+Analisando os resultados dos testes PP e ADF aplicados às séries em log-diferença, percebemos que em todos os casos obtivemos p-valores bastante baixos. Isso nos permite rejeitar a hipótese nula de existência de raíz unitária e atestar claramente a estacionariedade das séries, como supusemos anteriormente com a análise gráfica. Portanto, procederemos focar nossa análise, no decorrer deste trabalho, à modelagem das séries de log-diferença, que apresentam a desejada estacionariedade. Procederemos, a seguir, a analisar as funções de autocorrelação das séries em log-diferenças.
+
+Nos anexos deste trabalho poderá ser encontrada uma modelagem estrutural dos preços em nível, que apresenta insights bastante interessantes, mas de menor robustez devido à não haver estacionariedade demonstrada nos dados. Os processos de análise das funções de autocorrelação dos dados bem como de minimização dos critérios de informação serão também aplicados, nos anexos, para decisão de ordem desse modelo.
+
+# Funções de Autocorrelação Parcial
+
+A seguir, apresentamos os resultados das funções de autocorrelação parcial (PACF) das séries de log-diferença. As funções de autocorrelação usuais (ACF) foram calculadas, e estão apresentadas nos primeiros anexos (Anexo 1). Esses gráficos estão apresentados à parte, uma vez que a escolha de ordem dos componentes autoregressivos se dá pelos lags significantes das funções de autocorrelação parcial, e para deixar o corpo deste texto mais enxuto. Conforme pode ser visto a seguir, as séries de preços agropecuários em log-diferença exibem lags significantes de ordem 1, e as séries do dólar e do ibovespa não apresentam lags significantes. Isso sugere a escolha de um VAR de ordem 1, escolha que validaremos através da decisão por critérios de informação.
+
+```{r}
+pacfs <- imap(
+  dp[2:6],
+  
+  \(x, id) ggPacf(x) + 
+    theme_minimal() +
+    theme(panel.grid = element_blank()) + 
+    labs(
+      title = paste("Pacf:", str_to_sentence(id)),
+      y = "",
+      x = "Lags"
+      )
+  )
+
+grid.arrange(
+  grobs = pacfs,
+  top = textGrob(
+    "Autocorrelações Parciais: Séries em Log Diferença \n",
+    gp = gpar(fontsize = 15))
+   
+  )
+```
+
+# Critérios de Informação
+
+Os critérios de informação, como o AIC (Akaike Information Criterion), HQ (Hannan-Quinn), SC (Schwarz Criterion) e FPE (Final Prediction Error), desempenham um papel essencial na escolha do modelo mais apropriado em análises de séries temporais. O AIC busca equilibrar o ajuste do modelo com a simplicidade, penalizando modelos complexos. O HQ, semelhante ao AIC, introduz uma penalidade adicional para evitar o sobreajuste, sendo particularmente eficaz em amostras pequenas. O SC, também conhecido como critério de informação bayesiano (BIC), favorece modelos mais parcimoniosos e é especialmente útil em contextos de grande dimensionalidade. Por fim, o FPE estima a variabilidade dos resíduos, contribuindo para a escolha de modelos que ofereçam boa capacidade preditiva. Esses critérios fornecem ferramentas valiosas na busca por modelos que equilibrem complexidade e ajuste adequado aos dados. Rodamos uma simulação com a modelagem VAR das séries de log-diferença com ordens de 0 a 20, e retornamos o modelo minimizador para cada critério de informação. Percebemos que o modelo ideal, em todos os casos, é o VAR(1), conforme nossa hipótese realizada a partir da análise da PACF.
+
+```{r, results='asis'}
+VARselect(
+  y = dp[2:6],
+  lag.max = 20,
+  type = "const"
+  )$selection %>% 
+  as_tibble(rownames="criteria") %>% 
+  kable(
+    col.names = c(
+      "Criteria",
+      "Order"
+    ),
+    caption = "VAR Minimizador de Critérios"
+  )
+```
+
+# Modelagem VAR(1)
+
+A equação do modelo VAR que estimaremos é a seguinte:
+
+$$
+\begin{bmatrix}
+\text{soja}_{t+1} \\
+\text{boi}_{t+1} \\
+\text{milho}_{t+1} \\
+\text{dolar}_{t+1} \\
+\text{ibov}_{t+1}
+\end{bmatrix}
+=
+\begin{bmatrix}
+c_{1} \\
+c_{2} \\
+c_{3} \\
+c_{4} \\
+c_{5}
+\end{bmatrix}
++
+\begin{bmatrix}
+b_{11} & b_{12} & b_{13} & b_{14} & b_{15} \\
+b_{21} & b_{22} & b_{23} & b_{24} & b_{25} \\
+b_{31} & b_{32} & b_{33} & b_{34} & b_{35} \\
+b_{41} & b_{42} & b_{43} & b_{44} & b_{45} \\
+b_{51} & b_{52} & b_{53} & b_{54} & b_{55}
+\end{bmatrix}
+\begin{bmatrix}
+\text{soja}_{t} \\
+\text{boi}_{t} \\
+\text{milho}_{t} \\
+\text{dolar}_{t} \\
+\text{ibov}_{t}
+\end{bmatrix}
++
+\begin{bmatrix}
+u_{\text{soja},t+1} \\
+u_{\text{boi},t+1} \\
+u_{\text{milho},t+1} \\
+u_{\text{dolar},t+1} \\
+u_{\text{ibov},t+1}
+\end{bmatrix}
+$$
+
+A **Tabela 11** exibe os resultados do modelo VAR(1) com as séries trabalhadas. Podemos obter alguns insights interessantes sobre os coeficientes estatisticamente significantes:
+
+1.  O primeiro lag da log-diferença do preço da *soja* como explicativo da log-diferença do seu preço atual, com efeito positivo de $0,271$. Variações prévias nos preços da soja influenciam positivamente as mudanças atuais, indicando uma persistência ou inércia nas tendências de preço.
+
+2.  O primeiro lag da log-diferença do preço do *boi-gordo* como explicativo da log-diferença do seu preço atual, com efeito positivo de $0,337$. Semelhantemente, variações prévias nos preços do boi-gordo influenciam positivamente as mudanças atuais, também indicando persistência ou inércia.
+
+3.  O primeiro lag da log-diferença do preço da *soja* como explicativo da log-diferença do preço atual do *Milho*, com efeito positivo de $0,234$. A variação nos preços da soja antecipa positivamente as mudanças nos preços do milho, apontando para uma possível interdependência no mercado de grãos.
+
+4.  O primeiro lag da log-diferença do preço do *milho* como explicativo da log-diferença do seu preço atual, com efeito positivo de $0,305$. Assim como com as outras séries agrícolas, as variações prévias nos preços do milho influenciam positivamente as mudanças atuais, indicando persistência ou inércia no comportamento dos preços.
+
+5.  O primeiro lag da log-diferença do preço da *soja* como explicativo da log-diferença do preço atual do *dólar*, com efeito positivo de $0,089$. A variação nos preços da soja antecipa positivamente as mudanças nos preços do dólar, indicando uma possível sensibilidade cambial aos movimentos nos preços das commodities agrícolas. Isso faz sentido no Brasil, que é um grande exportador desses produtos, como discutimos na introdução.
+
+6.  O primeiro lag da log-diferença do preço do *dólar* como explicativo da log-diferença do seu preço atual, com efeito negativo de $-0,121$. Isso sugere uma dinâmica interessante, onde variações prévias no dólar influenciam negativamente as mudanças atuais, o que indica uma possível reversão às médias anteriores.
+
+7.  O primeiro lag da log-diferença do índice do *ibovespa* como explicativo da log-diferença do preço atual do *dólar*, com efeito negativo de $-0,089$. Variações prévias no ibovespa antecipam negativamente as mudanças nos preços do dólar, indicando uma possível relação de movimento oposto entre o mercado de ações e o câmbio.
+
+A série que se destaca com resultados mais significativos, revelando um maior grau de interconexão com as demais, é a log-diferença do dólar. Evidencia-se uma interação clara entre a principal commodity agrícola do país, a soja, e o índice Ibovespa com a taxa de câmbio. A dinâmica observada sugere uma sensibilidade marcante do mercado cambial aos movimentos nos preços da soja, sublinhando a influência do setor agrícola nas tendências financeiras nacionais. Adicionalmente, destaca-se a peculiaridade de a série de log-diferenças do Ibovespa não ser significativamente explicada por nenhuma das séries, incluindo seus próprios lags. Indicando, assim, que os retornos na bolsa de valores brasileira possuem uma natureza pouco previsível a partir de padrões históricos, sugerindo um comportamento mais próximo de um passeio aleatório.
+
+```{r}
+var1 <- VAR(
+  y = dp[2:6],
+  type = "const",
+  ic = "AIC",
+  lag.max = 20
+)
+
+# Resultados
+m1 <- var1$varresult
+r1 <- residuals(var1) %>% as_tibble()
+```
+
+```{r, results='asis'}
+stargazer(
+  m1,
+  header = FALSE,
+  title = "VAR(1)",
+  model.numbers = FALSE,
+  column.labels = c("soja", "boi", "milho", "dolar", "ibov")
+  )
+```
+
+A **Tabela 12** apresenta a matriz de Variância-Covariância (Sigma) dos Resíduos. Ao analisar os elementos das diagonais, podemos observar as variâncias individuais dos resíduos de cada série temporal, enquanto os elementos fora da diagonal indicam as covariâncias entre os resíduos, revelando potenciais padrões de co-movimento. A seguir, prosseguiremos para o diagnóstico do modelo, através da análise dos resíduos da regressão.
+
+```{r}
+summary(var1)$covres %>% 
+  kable(
+    caption = "Matriz Sigma: VAR(1)"
+  )
+```
+
+# Diagnóstico dos Resíduos
+
+Iniciamos o diagnóstico dos resíduos da regressão com um Teste de Ljung-Box. Essencialmente, o teste busca determinar se há padrões significativos de autocorrelação nos resíduos em diferentes lags. A hipótese nula do teste afirma que não há autocorrelação nos resíduos até um determinado lag, enquanto a hipótese alternativa sugere a presença de autocorrelação.
+
+Se o p-valor do teste for maior que algum nível de significância escolhido, não há evidências convincentes para rejeitar a hipótese nula, indicando que os resíduos não exibem autocorrelação significativa até o lag considerado. Em contrapartida, um p-valor baixo sugere que há autocorrelação nos resíduos, sugerindo que o modelo pode não estar capturando completamente a estrutura temporal dos dados.
+
+Os resultados do teste de Ljung-Box pode ser observado na **Tabela 13**. Eles indicam a *ausência* de autocorrelação significativa nos resíduos da soja (p-valor = $0.6231$), do milho (p-valor = $0.5234$), do boi (p-valor = $0.9490$), do dólar (p-valor = $0.9853$) e do Ibovespa (p-valor = $0.9638$). Como os p-valores estão significativamente mais altos que qualquer nível de significância adotado, não é possível rejeitar a hipótese nula de ausência de autocorrelação, até o lag considerado no teste. Portanto, podemos considerar que o modelo obteve um bom resultado, e mantemos a hipótese de ausência de autocorrelação serial nos resíduos.
+
+```{r, warning=FALSE}
+map_dfr(
+  r1,
+  
+  \(x) Box.test(x, type = "Ljung-Box") %>%  tidy(),
+  .id = "serie"
+  
+  )%>% 
+  kable(
+    col.names = c(
+      "Série",
+      "Statistic: X-Squared",
+      "P Value",
+      "Lags",
+      "Method"
+      ),
+    caption = "Teste Ljung-Box: Resíduos VAR(1) das Log Diferenças"
+    )
+```
+
+Podemos empreender também uma análise gráfica dos resíduos do modelo. A seguir, vemos um gráfico em que foram plotados os resíduos do VAR(1), bem como uma faixa de intervalo de confiança calculada para o nível de significância de 95%. Podemos também empreender uma análise gráfica dos resíduos do modelo VAR(1) gerado. Na representação a seguir, apresentamos os resíduos juntamente com uma faixa de intervalo de confiança, calculada para um nível de significância de 95%, que permite a identificação de desvios mais significantes. Podemos observar que as séries se mantém dentro das margem ideais, exceto em períodos de extremada volatilidade, como os que discutimos anteriormente (2016, 2020 e 2022). Isso sugere que a utilização de modelos que levem em conta variância heteroscedástica em consonância ao VAR poderiam agregar em poder preditivo.
+
+```{r}
+r1_longer <- r1 %>% 
+  mutate(
+    data = dp$data[2:465]
+  ) %>% 
+  pivot_longer(
+    cols = !data,
+    values_to = "residuals",
+    names_to = "serie"
+  ) %>% 
+  mutate(
+    serie = factor(
+      serie,
+      levels = c("soja", "boi", "milho", "dolar", "ibov"),
+      ordered = TRUE
+    )
+  ) %>% 
+  group_by(
+    serie
+  ) %>% 
+  mutate(
+    lower_bound = mean(residuals)-1.96*sd(residuals),
+    upper_bound = mean(residuals)+1.96*sd(residuals)
+  )
+```
+
+```{r}
+r1_longer %>% 
+  ggplot() +
+  aes(x = data, y = residuals) +
+  geom_line(aes(color=serie)) +
+  geom_ribbon(aes(ymin = lower_bound, ymax = upper_bound, fill = serie), alpha = 0.2)+
+  facet_grid(
+    rows = vars(serie),
+    scales = "free")  +
+  labs(
+    title = 'Resíduos: VAR(1) com Log Diferenças',
+    subtitle = "Intervalos de Confiança a 95%",
+    x = "Data",
+    y = "Resíduos",
+    fill = "C.I. 95%",
+    color = "Série"
+  ) +
+  scale_y_continuous(
+    labels = scales::label_comma(scale_cut = scales::cut_long_scale())
+    ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color='grey')
+    ) +
+  geom_hline(yintercept = 0, linetype = 3, color = "grey")
+```
+
+Por fim, também realizamos a plotagem das Funções de Autocorrelação (ACF) e de Autocorrelação Parcial (PACF) dos resíduos. Essas funções proporcionam uma análise adicional da presença de autocorrelação nos resíduos do modelo VAR(1). Os resultados estão consistentes com as conclusões anteriores, como as evidenciadas no teste de Ljung-Box. Não há indicações significativas de autocorrelação serial nos resíduos do modelo VAR(1).
+
+```{r}
+acfs <- imap(
+  r1,
+  \(x, id) ggAcf(x) + 
+    theme_minimal() +
+    theme(panel.grid = element_blank())+
+    labs(
+      title = paste("Acf:", str_to_sentence(id)),
+      y = "",
+      x = "Lags"
+      )  )
+
+pacfs <- imap(
+  r1,
+  
+  \(x, id) ggPacf(x) + 
+    theme_minimal() +
+    theme(panel.grid = element_blank()) + 
+    labs(
+      title = paste("Pacf:", str_to_sentence(id)),
+      y = "",
+      x = "Lags"
+      )
+  )
+
+grid.arrange(
+  grobs = c(acfs, pacfs),
+  top = textGrob(
+    "Autocorrelações e Autocorrelações Parciais dos Resíduos VAR(1) \n",
+    gp = gpar(fontsize = 15))
+   
+  )
+```
+
+# Resposta a Impulso das Log-Diferenças
+
+A Função de Resposta a Impulsos (IRF) de um modelo VAR é uma ferramenta que quantifica o impacto de choques ou impulsos em uma variável do modelo sobre as outras variáveis do sistema ao longo do tempo. Em outras palavras, ela mostra como uma mudança súbita em uma variável afeta as demais. No caso das log-diferenças, as IRFs destacam a o efeito de choques de taxa de variação de uma variável nas outras taxas de variação.
+
+Selecionamos aqui apenas os resultados mais relevantes, enquanto os gráficos completos estão disponíveis no Anexo B. Nos concentraremos nos impulsos do dólar sobre ele mesmo e sobre o Ibovespa, bem como nos impulsos da soja sobre ela mesma, sobre o milho, sobre o dólar e sobre o Ibovespa. Iniciamos vendo as respostas a impulso mais relevantes do dólar.
+
+```{r}
+irf_dolar <- irf(
+  var1,
+  impulse = "dolar",
+  response = c("dolar","ibov"),
+  n.ahead = 12
+  )
+```
+
+```{r, fig.width=10}
+plot(
+  irf_dolar,
+  nc=2
+  )
+```
+
+1.  O dólar exerce um impacto significativamente positivo e com rápida dissipação sobre sua própria série, refletindo uma influência de curto prazo nas taxas de variação cambial.
+
+2.  O dólar demonstra também um impacto negativo marcante e de rápida dissipação sobre o índice Ibovespa. Esse efeito sugere uma relação de curto prazo, indicando como as variações nas taxas de câmbio podem influenciar rapida e negativamente o desempenho do mercado de ações.
+
+```{r}
+irf_soja <- irf(
+  var1,
+  impulse = "soja",
+  response = c("soja","milho", "dolar","ibov"),
+  n.ahead = 12
+  )
+```
+
+```{r, fig.width=10}
+plot(
+  irf_soja,
+  nc=2
+  )
+```
+
+3.  Já a soja apresenta um impacto positivo substancial e com uma dissolução mais lenta ao longo do tempo, sobre sua própria série. Isso indica uma resposta persistente e de mais longo prazo das taxas de variação dos preços da soja.
+
+4.  A soja exerce um efeito positivo moderado sobre o milho, com persistência ao longo de algumas semanas antes de se começar a decair. Essa dinâmica sugere uma influência transitória, mas ainda perceptível, da soja sobre as taxas de variação nos preços do milho.
+
+5.  A soja exibe um efeito moderadamente positivo sobre o dólar, com uma taxa de dissipação alinhada à da série de impulso. Isso sugere uma resposta relativamente sincronizada nas taxas de variação entre a soja e o câmbio.
+
+6.  A soja demonstra um efeito moderadamente negativo sobre o Ibovespa, com uma taxa de dissipação similar à da série de impulso. Essa resposta indica uma relação inversa de curto prazo entre as taxas de variação nos preços da soja e o desempenho do mercado de ações, que tende a apresentar taxa de variação negativa após choques nas taxas de variação do preço da soja.
+
+# Causalidade de Granger
+
+Por último, realizaremos a avaliação da causalidade no sentido de Granger entre as variáveis, que é um teste estatístico usado para determinar se o passado de uma variável fornece informações preditivas adicionais sobre o comportamento futuro de outra. A hipótese nula no teste de causalidade de Granger é que os valores passados de uma série não fornecem poder preditivo adicional para os valores futuros das outras. A rejeição da hipótese nula sugere a presença de causalidade de Granger. É importante observar que a causalidade de Granger não implica causalidade verdadeira no sentido de uma relação de causa e efeito, mas sim previsibilidade estatística.
+
+```{r}
+map_dfr(
+  c("soja", "boi", "milho", "dolar", "ibov"),
+  \(x) causality(var1, cause = x)$Granger %>% tidy()
+  ) %>% 
+  mutate(
+    serie = c("soja", "boi", "milho", "dolar", "ibov"),
+    .before = everything(),
+    
+    method = str_remove(method, "Granger causality")
+  ) %>% 
+  select(
+    -c(df1,df2)
+  ) %>% 
+  kable(
+    col.names = c(
+      "Série",
+      "F-Statistic",
+      "P Value",
+      "Hipótese Nula"
+      ),
+    caption = "Teste de Causalidade de Granger: Modelo VAR(1)", 
+    digits = 4
+    )
+
+```
+
+Os resultados do teste de causalidade de Granger, apresentados na **Tabela 14** indicam aspectos interessantes nas relações temporais entre as variáveis analisadas no modelo VAR(1).
+
+1.  **Soja:** A estatística F significativa (F-Statistic = $4.34$, P Value = $0.0017$) sugere que as variações passadas na série de soja têm um efeito estatisticamente significante na previsão das mudanças futuras nas séries de boi, milho, dólar e Ibovespa. Rejeitamos a hipótese nula de que a soja não causa-Granger nas outras variáveis.
+
+2.  **Boi:** Com uma estatística F não significativa (F-Statistic = $0.69$, P Value = $0.6007$), não temos evidências estatísticas para rejeitar a hipótese nula (H0) de que o boi não causa Granger nas outras variáveis. Portanto não podemos argumentar que há presença de causalidade de Granger neste caso.
+
+3.  **Milho:** Da mesma forma, o milho não apresenta evidências significativas de causar Granger em outras variáveis, dado o valor não significativo da estatística F (F-Statistic = $0.89$, P Value = $0.4675$).
+
+4.  **Dólar:** O dólar também não demonstra efeito Granger significativo nas outras variáveis, conforme indicado pela estatística F não significativa (F-Statistic = $0.13$, P Value = $0.9710$).
+
+5.  **Ibovespa:** O índice Ibovespa exibe uma estatística F significativa (F-Statistic = $2.24$, P Value = $0.0621$). Isso sugere que existe uma possível relação de causalidade de Granger entre o Ibovespa e pelo menos algumas das outras variáveis (soja, boi e milho). No entanto, como o valor de p está um pouco acima do nível de significância comum de 0.05, não podemos rejeitar a hipótese nula com alta confiança estatística.
+
+# Conclusão
+
+Este estudo conduziu uma análise abrangente das inter-relações entre os preços dos principais produtos agrícolas no Brasil (soja, milho, boi gordo) e fatores macroeconômicos, incluindo a taxa de câmbio do dólar e o índice Ibovespa da bolsa de valores brasileira, ao longo dos últimos 9 anos. Utilizando a modelagem VAR e diversas ferramentas econométricas, exploramos as dinâmicas temporais dessas séries, identificando padrões intrigantes.
+
+As três séries agrícolas revelaram níveis de persistência em suas taxas de variação, destacando a inércia nas tendências de preço ao longo do tempo. A sensibilidade cambial aos movimentos nos preços agrícolas foi evidenciada pelo efeito positivo do lag na soja como explicativo das mudanças no dólar. Além disso, a dinâmica intrigante do dólar, com um efeito negativo do próprio lag, sugere a possibilidade de reversão às médias anteriores. A soja também demonstrou efeitos de interconexão dentro do mercado agrícola, influenciando os preços do milho.
+
+A soja emergiu como uma variável de influência significativa, evidenciando sua capacidade de Granger-causar mudanças nos preços do boi gordo, milho, dólar e Ibovespa. Em contraste, outras variáveis, como o boi gordo, milho e dólar, não apresentaram efeitos Granger estatisticamente significativos nas demais variáveis. O índice Ibovespa revelou uma relação mais sutil, indicando uma possível influência de Granger nas séries de soja, boi gordo e milho, embora sem atingir a significância convencional. Esses achados destacam a complexidade e a dinâmica única do cenário econômico brasileiro, fornecendo insights valiosos para os participantes do mercado financeiro e agrícola.
+
+# Referências
+
+**R.J. Hyndman and Y. Khandakar.** Forecasts: Forecasting Functions for Time Series and Linear Models. R package version 8.15. URL: <https://pkg.robjhyndman.com/forecast/>
+
+**B. Pfaff**. *urca:* Unit Root and Cointegration Tests for Time Series Data. R package version 1.3-0. URL: <https://CRAN.R-project.org/package=urca>
+
+**B. Pfaff.** *vars*: VAR Modelling. R package version 1.5-6. URL: <https://CRAN.R-project.org/package=vars>
+
+**A. Trapletti and K. Hornik.** *tseries*: Time Series Analysis and Computational Finance. R package version 0.10-48. URL: [https://CRAN.R-project.org/package=tseries](https://cran.r-project.org/package=tseries)
+
+**Granger, C. W. J.; Newbold, P.** Forecasting Economic Time Series. 2. ed. San Diego: Academic Press, 1986.
+
+**Hamilton, J. D.** Time Series Analysis. Princeton: Princeton University Press, 1994.
+
+**Enders, W.** Applied Econometric Time Series. 4. ed. New York: Wiley Publishers, 2003.
+
+**Shumway, R. H.; Stoffer, D. S.** Time Series Analysis and Its Applications: With R Examples. 2. ed. Belmont: Springer, 2017.
+
+# Anexos
+
+## Github
+
+Os códigos e os dados utilizados de input podem ser encontrados no meu github, no repositório criado para esta disciplina: [OliverShai/econometria-2](https://github.com/OliverShai/econometria-2)
+
+## (A) Demais Funções de Autocorrelação
+
+Aqui, apresentamos as funções de autocorrelação (ACF) das séries em nível e das séries em log-diferença. Conforme foi discutido no corpo do texto, a truncagem dos lags na ACF indica a ordem dos componentes MA nas séries. Como o escopo deste trabalho foi a modelagem VAR, estes componentes não afetaram a decisão de ordem do modelo. Contudo, há pontos interessantes que merecem ser apresentados.
+
+No caso das séries de log-diferença, vemos nos produtos agro-pecuários alguns lags estatísticamente significantes, sobretudo na série do Milho. Isso sugere que o uso de componentes média-móvel na modelagem dessas séries pode ser importante para representar melhor suas dinâmicas. Uma modelagem utilizando processos VARMA poderia ser interessante para tratar desses aspectos.
+
+Já no caso das autocorrelações do nível de preços, vemos um decaimento lento de todas as séries. Isso provavelmente significa a presença de raíz unitária, conforme vimos no corpo do texto, já que os testes PP e ADF não foram capazes de rejeitar essa possibilidade. As funções de autocorrelação parcial tem truncamento após o segundo lag, com forte decaimento entre o primeiro e o segundo lag. Esse resultado também está em linha com a presença de raíz unitária nos dados.
+
+### ACF das Log-Diferenças
+
+```{r}
+acfs <- imap(
+  dp[2:6],
+  \(x, id) ggAcf(x) + 
+    theme_minimal() +
+    theme(panel.grid = element_blank())+
+    labs(
+      title = paste("Acf:", str_to_sentence(id)),
+      y = "",
+      x = "Lags"
+      )  )
+
+grid.arrange(
+  grobs = acfs,
+  top = textGrob(
+    "Autocorrelações: Séries em Log Diferença \n",
+    gp = gpar(fontsize = 15)
+    )
+  )
+```
+
+### ACF do Nível de Preços
+
+```{r}
+acfs <- imap(
+  precos[2:6],
+  \(x, id) ggAcf(x) + 
+    theme_minimal() +
+    theme(panel.grid = element_blank())+
+    labs(
+      title = paste("Acf:", str_to_sentence(id)),
+      y = "",
+      x = "Lags"
+      )  )
+
+grid.arrange(
+  grobs = acfs,
+  top = textGrob(
+    "Autocorrelações: Séries em Nível de Preços \n",
+    gp = gpar(fontsize = 15))
+   
+  )
+```
+
+### PACF do Nível de Preços
+
+```{r}
+pacfs <- imap(
+  precos[2:6],
+  \(x, id) ggPacf(x) + 
+    theme_minimal() +
+    theme(panel.grid = element_blank()) + 
+    labs(
+      title = paste("Pacf:", str_to_sentence(id)),
+      y = "",
+      x = "Lags"
+      )
+  )
+
+grid.arrange(
+  grobs = pacfs,
+  top = textGrob(
+    "Autocorrelações Parciais: Séries em Nível de Preços \n",
+    gp = gpar(fontsize = 15))
+   
+  )
+```
+
+## (B) Respostas a Impulso Completas da Log-Diferença
+
+```{r}
+irfs <- map(
+  c("soja", "boi", "milho", "dolar", "ibov"),
+  \(x) irf(
+    var1,
+    impulse = x,
+    n.ahead = 12
+    )
+  ) %>% 
+  set_names(c("soja", "boi", "milho", "dolar", "ibov"))
+```
+
+### Impulso da Soja
+
+```{r, fig.width=10}
+plot(irfs$soja,nc = 3)
+```
+
+### Impulso do Boi
+
+```{r, fig.width=10}
+plot(irfs$boi,nc = 3)
+```
+
+### Impulso do Milho
+
+```{r, fig.width=10}
+plot(irfs$milho,nc = 3)
+```
+
+### Impulso do Dólar
+
+```{r, fig.width=10}
+plot(irfs$dolar,nc = 3)
+```
+
+### Impulso do Ibovespa
+
+```{r, fig.width=10}
+plot(irfs$ibov,nc = 3)
+```
+
+## (C) Modelagem VAR com Série em Nível
+
+Minimizamos os critérios de informação, calculamos o modelo e apresentamos o teste de Ljung-Box dos resíduos, com a série em níveis de preço.
+
+```{r, results='asis'}
+VARselect(
+  y = precos[2:6],
+  lag.max = 20,
+  type = "const"
+  )$selection %>% 
+  as_tibble(rownames="criteria") %>% 
+  kable(
+    col.names = c(
+      "Criteria",
+      "Order"
+    ),
+    caption = "VAR Minimizador de Critérios"
+  )
+```
+
+```{r}
+var2 <- VAR(
+  y = precos[2:6],
+  type = "const",
+  ic = "AIC",
+  lag.max = 20
+)
+
+# Resultados
+m2 <- var2$varresult
+r2 <- residuals(var2) %>% as_tibble()
+```
+
+```{r, results='asis'}
+stargazer(
+  m2,
+  header = FALSE,
+  title = "VAR(1)",
+  model.numbers = FALSE,
+  column.labels = c("soja", "boi", "milho", "dolar", "ibov")
+  )
+```
+
+```{r}
+map_dfr(
+  r2,
+  
+  \(x) Box.test(x, type = "Ljung-Box") %>%  tidy(),
+  .id = "serie"
+  
+  )%>% 
+  kable(
+    col.names = c(
+      "Série",
+      "Statistic: X-Squared",
+      "P Value",
+      "Lags",
+      "Method"
+      ),
+    caption = "Teste Ljung-Box: Resíduos VAR(2) dos Níveis de Preço"
+    )
+```

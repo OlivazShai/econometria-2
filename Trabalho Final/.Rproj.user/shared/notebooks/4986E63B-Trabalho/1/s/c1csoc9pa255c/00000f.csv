@@ -1,0 +1,7 @@
+"0","# Construção da série log-dif em WIDE"
+"0","dp <- dp_longer %>% "
+"0","  pivot_wider("
+"0","    names_from = serie,"
+"0","    values_from = dp"
+"0","  ) %>% "
+"0","  drop_na()"

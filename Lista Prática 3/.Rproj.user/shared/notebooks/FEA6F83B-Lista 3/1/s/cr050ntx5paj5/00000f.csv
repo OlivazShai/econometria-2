@@ -1,0 +1,8 @@
+"0","dados_var <- dados_var_bruto %>%"
+"0","  mutate("
+"0","    log_dif_c = log(c/lag(c)),"
+"0","    log_dif_R = log_R-lag(log_R)"
+"0","    ) %>% "
+"0","  filter("
+"0","    date > ""1970-10-01"""
+"0","  )"

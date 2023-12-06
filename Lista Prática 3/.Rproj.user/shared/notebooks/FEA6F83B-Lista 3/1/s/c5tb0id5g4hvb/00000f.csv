@@ -1,0 +1,1 @@
+"0","r1 <- residuals(var1) %>% as_tibble()"

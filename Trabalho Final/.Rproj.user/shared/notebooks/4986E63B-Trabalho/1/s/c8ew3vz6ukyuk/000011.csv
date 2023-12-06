@@ -1,0 +1,6 @@
+"0","dp %>% "
+"0","  head(8) %>% "
+"0","  kable("
+"0","    caption = ""Série Log-Diferença: Primeiras 8 Observações"","
+"0","    digits = 4"
+"0","  )"

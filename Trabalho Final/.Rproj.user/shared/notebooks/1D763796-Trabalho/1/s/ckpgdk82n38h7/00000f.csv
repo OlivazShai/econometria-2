@@ -1,0 +1,8 @@
+"0","#Importando Boi Gordo"
+"0","boi <- read_delim("
+"0","  file = ""./Inputs/boi_mt.csv"","
+"0","  delim = "";"","
+"0","  skip = 1,"
+"0","  col_names = c(""data"", ""boi""),"
+"0","  col_types = c(""D"", ""d"")"
+"0",")"

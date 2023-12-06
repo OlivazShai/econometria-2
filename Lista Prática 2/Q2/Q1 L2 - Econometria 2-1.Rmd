@@ -1,0 +1,414 @@
+---
+title: "Questão 1"
+author: "Shai Vaz, Heron Goulart, Alexandre Almeida, João Pedro Pedrosa, Roberto Orenstein"
+date: "2023-10-05"
+output:
+  pdf_document: default
+  html_document: default
+bibliography: references.bib
+---
+
+```{r, include=FALSE}
+library(zoo)
+library(xts)
+library(latex2exp)
+library(dplyr)
+library(tseries)
+library(fUnitRoots)
+library(forecast)
+library(fGarch)
+library(lubridate)
+library(tsbox)
+library(knitr)
+library(broom)
+library(stargazer)
+```
+
+# Questão 1: S&P 500
+
+## Importar Base
+
+```{r}
+# importar índice S&P500
+ativo <- quantmod::getSymbols(
+  "^GSPC", 
+  src = "yahoo", 
+  auto.assign = FALSE, 
+  from = '2015-09-01', 
+  to = '2023-09-01', 
+  periodicity = "daily")
+```
+
+## Série em nível
+
+Selecionando os preços de fechamento, em nível, do índice.
+
+```{r}
+close <- ativo[,"GSPC.Close"]
+```
+
+Os dados estão em `xts`, mas preferiremos por simplicidade trabalhar com o formato `ts`.
+
+```{r}
+# ts (nível)
+ts_close <- ts_ts(close)
+```
+
+```{r}
+plot(ts_close,
+     xlab = "Data",
+     ylab = "Preço de Fechamento (Nível)",
+     main = "S&P 500 Index: Série em Nível")
+```
+
+## Série em Log
+
+```{r}
+log_close <- log(close)
+ts_log_close <- log(ts_close)
+plot(ts_log_close,
+     xlab = "Data",
+     ylab = "Preço de Fechamento (Log)",
+     main = "S&P 500 Index: Série em Log")
+```
+
+## Série em Log-Dif
+
+Tiraremos a primeira diferença da série em log.
+
+```{r}
+dif_log_close <- diff(log_close)[-1,]
+ts_dif_log_close <- diff(ts_log_close)
+plot(ts_dif_log_close,
+     xlab = "Data",
+     ylab = "Log-Diferença dos preços",
+     main = "S&P 500 Index: Série Log-Diferença"
+     )
+```
+
+## Teste de Phillips-Perron (PPT)
+
+### Para a série Log-Nível
+
+```{r, include=FALSE}
+ppt_log_close <- pp.test(log_close)
+```
+
+```{r}
+tidy(ppt_log_close) %>% 
+  kable(
+    col.names = c(
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Parameter: Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+    ),
+    caption = "Teste Philips Perron: Série Log Nível"
+  )
+```
+
+Nesse caso, não rejeitamos a hipótese nula ao nível de significância $0.05$. Há indícios portanto que a série não é estacionária e tem raíz unitária.
+
+### Para a série Log-Dif
+
+```{r, warning=FALSE}
+ppt_dif_log_close <- pp.test(dif_log_close)
+```
+
+```{r}
+tidy(ppt_dif_log_close) %>% 
+  kable(
+    col.names = c(
+      "Statistic: Dickey-Fuller Z (alpha)",
+      "P Value",
+      "Parameter: Truncation lag",
+      "Method",
+      "Alternative Hypothesis"
+    ),
+    caption = "Teste Philips Perron"
+  )
+```
+
+Nesse caso, podemos rejeitar a hipótese nula e aceitar a hipótese alternativa ao nível de significância $0.05$. Portanto, a série é estacionária.
+
+## Modelando a média com um ARIMA(p,d,q)
+
+### Autocorrelation Functions
+
+Primeiramente, vamos avaliar as funções de autocorrelação e autocorrelação parcial da nossa série escolhida, a série log-dif.
+
+```{r}
+s1 <- ts(dif_log_close)
+```
+
+```{r}
+acf(s1,
+    main = "Autocorrelation Function: S&P500 Log-Dif"
+    )
+```
+
+Temos uma série com ACF que aparece truncada na segunda defasagem, indicando um componente MA(2).
+
+```{r}
+pacf(
+  s1,
+  main = "Partial Autocorrelation Function: S&P500 Log-Dif"
+  )
+```
+
+Temos uma série com PACF truncada na segunda defasagem, indicando um componente AR(2).
+
+### Críterios de Informação
+
+Podemos verificar a decisão através dos critérios de informação. Utilizaremos a função `auto.arima`, que, de forma automática, calcula todos os modelos dentro de limites dados, calcula seus critérios de informação e escolhe o modelo que minimiza. Aqui, escolhemos os limites de 5 lags para cada parte do modelo (AR e MA). Primeiro, minimizaremos o BIC.
+
+```{r}
+model_auto_bic <- auto.arima(
+  max.p = 5,
+  max.q = 5,
+  s1,
+  seasonal = FALSE,
+  stepwise = FALSE,
+  approximation = FALSE,
+  ic = "bic"
+  )
+```
+
+```{r}
+tidy(model_auto_bic) %>% 
+  kable(
+    col.names = c(
+      "Term",
+      "Estimate",
+      "Standard Error"
+    ),
+    caption = "BIC Minimizer Model"
+  )
+```
+
+Agora, pelo critério do AIC.
+
+```{r}
+model_auto_aic <- auto.arima(
+  max.p = 5,
+  max.q = 5,
+  s1,
+  seasonal = FALSE,
+  stepwise = FALSE,
+  approximation = FALSE,
+  ic = "aic"
+  )
+```
+
+```{r}
+tidy(model_auto_aic) %>% 
+  kable(
+    col.names = c(
+      "Term",
+      "Estimate",
+      "Standard Error"
+    ),
+    caption = "AIC Minimizer Model"
+  )
+```
+
+Concluímos que, de fato, a escolha do modelo ARMA(2,2) para a média da série da Log-diferença é a ideal nesse caso, sustentado tanto pela análise das ACF e PACF quanto pelos critérios de informação.
+
+### ARMA(2,2)
+
+Implementando o modelo escolhido ARMA(2,2).
+
+```{r}
+m202 <- arima(s1, order = c(2, 0, 2))
+```
+
+```{r, results='asis'}
+stargazer(
+  m202,
+  header = FALSE,
+  float = FALSE,
+  dep.var.labels = "$\\Delta \\log (P)$" 
+)
+```
+
+## Análise de Resíduos
+
+### Série dos resíduos
+
+Primeiro, coletamos a série dos resíduos.
+
+```{r}
+res_m202 <- residuals(m202)
+```
+
+Visualizando.
+
+```{r}
+datas <- index(dif_log_close)
+plot(res_m202,
+     xlab = "Time",
+     ylab = "Resíduos",
+     x = datas,
+     type = "l",
+     main = "Resíduos da ARMA(2,2)")
+```
+
+### Autocorrelação dos resíduos
+
+Quanto à ACF:
+
+```{r}
+acf(res_m202,
+    main = TeX(r"(Autocorrelação dos $\epsilon$ da regressão ARMA(2,2))"))
+```
+
+Quanto à PACF:
+
+```{r}
+pacf(res_m202,
+     main = TeX(r"(Autocorrelação parcial dos $\epsilon$ da regressão ARMA(2,2))"))
+```
+
+Podemos ver que, como esperado, os resíduos não exibem padrão claro de autocorrelação serial. Mas será que isso vale também para os quadrados dos resíduos, que estimam sua variância?
+
+### Autocorrelação dos quadrados dos resíduos
+
+Quanto à ACF:
+
+```{r}
+acf(res_m202^2,
+    main = TeX(r"(Autocorrelação dos $\epsilon^2$ da regressão ARMA(2,2))")
+  )
+```
+
+E quanto à PACF:
+
+```{r}
+pacf(res_m202^2,
+     main = TeX(r"(Autocorrelação parcial dos $\epsilon^2$ da regressão ARMA(2,2))"))
+```
+
+Vemos que quando analisamos os resíduos ao quadrado, encontramos a presença de autocorrelação serial, indicando que a série não é homoscedástica. Vamos realizar um teste mais robusto de autocorrelação na série.
+
+### Teste de Ljung-Box
+
+Para a série de resíduos:
+
+```{r}
+box_teste <- Box.test(res_m202, lag = 250, type = "Ljung-Box")
+tidy(box_teste) %>% 
+  kable(
+    digits = 5,
+    col.names = c(
+      "Estatística de Teste",
+      "P Value",
+      "Lags",
+      "Method"
+    )
+  )
+```
+
+Assim, não podemos rejeitar a hipótese nula de não haver autocorrelação serial nos resíduos, como era esperado olhando para as funções.
+
+Agora, para a série de seríduos ao quadrado:
+
+```{r}
+res2_m202 <- res_m202^2
+box_teste <- Box.test(res2_m202, lag = 250, type = "Ljung-Box")
+tidy(box_teste) %>% 
+  kable(
+    digits = 5,
+    col.names = c(
+      "Estatística de Teste",
+      "P Value",
+      "Lags",
+      "Method"
+    )
+  )
+```
+
+Nesse caso, ao fazer o teste de Ljung-Box encontramos um p-valor estatísticamente igual a zero. Rejeitamos portanto a hipótese nula de ausência de autocorrelação serial no quadrado dos resíduos. Concluímos que embora não haja correlação entre os resíduos, há correlação serial entre seu quadrados resíduos. Logo, faz-se necessária uma modelagem para a variância.
+
+## GARCH
+
+### Modelo 
+
+Há suporte na literatura para o uso do modelo GARCH(1,1) para modelar a volatilidade de ativos financeiros, vide [@hansen2005]. Utilizaremos então o modelo ARMA(2,2) encontrado no passo anterior para modelar a média, e um GARCH(1,1) para modelar a variância.
+
+```{r, warning=FALSE}
+modelo_garch <- garchFit(
+  formula = ~arma(2,2) + garch(1,1), 
+  data = s1,
+  trace = FALSE)
+```
+
+Temos o seguinte modelo:
+
+$$
+\Delta \log (P_t) = c + \phi_1 \Delta \log (P_{t-1}) + \phi_2 \Delta \log (P_{t-2}) + \psi_1\epsilon_{t-1} + \psi_2\epsilon_{t-2} +\epsilon_t
+$$
+
+$$
+\epsilon_t | \mathcal{I}_t \sim \mathcal{N}(0,\sigma^2_t),
+$$
+
+$$
+\sigma^2_t = \omega + \alpha_1\epsilon_{t-1}^2 + \beta_1 \sigma^2_{t-1} + \eta_t
+$$
+
+```{r, results='asis'}
+stargazer(
+  modelo_garch,
+  header = FALSE,
+  float = FALSE,
+  dep.var.labels = "$\\Delta \\log (P)$",
+  digits = 3,
+  covariate.labels=c(
+    "c",
+    "$\\phi_1$",
+    "$\\phi_2$",
+    "$\\psi_1$",
+    "$\\psi_2$",
+    "$\\omega$",
+    "$\\alpha_1$",
+    "$\\beta_1$"
+  ))
+```
+
+### Previsão
+
+Agora, podemos aplicar uma previsão utilizando nosso modelo levando em conta a variância condicional. Primeiro, temos uma previsão da série log-dif. Note que realizamos o forecasting com um ano-padrão de 252 dias úteis.
+
+```{r, results='hide', warning=FALSE}
+garch_predict = predict(
+  modelo_garch,
+  n.ahead = 252,
+  nx = length(s1),
+  plot = TRUE)
+```
+
+Em seguida, podemos exibir a previsão da volatilidade, representada pelo Desvio Padrão.
+
+```{r}
+garch_predict_xts <- xts(
+  garch_predict$standardDeviation, 
+  order.by = seq(as.Date("2023-09-02"), by = "days", length.out = 252))
+
+var_s1 <- rollapply(dif_log_close, width = 2, FUN = sd, fill = NA)[-1]
+
+var_predict <- rbind(var_s1, garch_predict_xts)
+```
+
+```{r}
+plot(
+  ts(var_predict),
+  type = "l",
+  x = index(var_predict),
+  xlab = "Horizonte",
+  ylab = "Volatilidade (sd)",
+  main = "Volatilidade condicional (sd): forecasting"
+  )
+```
+
+# References
